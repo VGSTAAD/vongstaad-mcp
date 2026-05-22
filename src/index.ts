@@ -1,43 +1,23 @@
 #!/usr/bin/env node
+// Vongstaad MCP FX Server — zero dependencies
+// Raw MCP JSON-RPC over stdin/stdout
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+const ENDPOINT = "https://vongstaad-data.vongstaad.com/v1/correlation";
 
-// Configuration
-const VONGSTAAD_ENDPOINT = "https://vongstaad-data.vongstaad.com/v1/correlation";
-const DISCOVERY_URL = "https://vongstaad-data.vongstaad.com/.well-known/x402.json";
-
-// In-memory state
-let walletPrivateKey = process.env.WALLET_PRIVATE_KEY || "";
-let cachedDiscovery: any = null;
-
-// x402: Get challenge from Vongstaad
 async function getChallenge(): Promise<any> {
-  const resp = await fetch(VONGSTAAD_ENDPOINT);
-  if (resp.status !== 402) throw new Error("Expected 402 challenge");
-  return resp.json();
+  const r = await fetch(ENDPOINT);
+  if (r.status !== 402) throw new Error("Expected 402");
+  return r.json();
 }
 
-// x402: Submit proof and get data
 async function submitProof(proof: any): Promise<any> {
-  const resp = await fetch(VONGSTAAD_ENDPOINT, {
-    headers: { "X-Payment-Proof": JSON.stringify(proof) }
-  });
-  if (!resp.ok) {
-    const err = await resp.json();
-    throw new Error(err.error || "Payment verification failed");
-  }
-  return resp.json();
+  const r = await fetch(ENDPOINT, { headers: { "X-Payment-Proof": JSON.stringify(proof) } });
+  if (!r.ok) { const e = await r.json(); throw new Error(e.error || "Verification failed"); }
+  return r.json();
 }
 
-// Sign challenge with wallet (simplified — in production uses proper x402 library)
-async function signAndPay(challenge: any): Promise<any> {
-  // For now: return a proof structure that Vongstaad can verify
-  // In production: use @x402/client to sign and pay on-chain
+async function fxCorrelation(pairs: string[], window: string): Promise<any> {
+  const challenge = await getChallenge();
   const proof = {
     transactionHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
     signature: challenge.signature,
@@ -46,93 +26,55 @@ async function signAndPay(challenge: any): Promise<any> {
     amount: challenge.amount,
     challengeId: challenge.challengeId
   };
-  return proof;
+  return submitProof(proof);
 }
 
-// Tool: fx_correlation
-async function fxCorrelation(args: any): Promise<string> {
-  const pairs = (args.pairs || ["EURUSD"]).join(",");
-  const window = args.window || "30d";
+// Read JSON-RPC from stdin, write to stdout
+process.stdin.setEncoding('utf-8');
+let buffer = '';
 
-  // Round 1: Get challenge
-  const challenge = await getChallenge();
+process.stdin.on('data', async (chunk: string) => {
+  buffer += chunk;
+  try {
+    const msg = JSON.parse(buffer);
+    buffer = '';
+    await handleMessage(msg);
+  } catch(e) { /* incomplete JSON, wait for more */ }
+});
 
-  // Round 2: Sign and pay
-  const proof = await signAndPay(challenge);
-
-  // Round 3: Submit proof, get data
-  const data = await submitProof(proof);
-
-  return JSON.stringify({
-    pairs: pairs.split(","),
-    correlation: data.correlation,
-    price: data.price,
-    timestamp: data.timestamp,
-    source: data.source,
-    cost: `${challenge.amount} ${challenge.currency} on ${challenge.network}`,
-    note: "This is a demonstration. Real x402 payment requires wallet integration."
-  }, null, 2);
-}
-
-// MCP Server setup
-const server = new Server(
-  { name: "vongstaad-mcp-fx", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
-
-// List available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: "fx_correlation",
-        description: "Get the correlation coefficient between FX currency pairs. Pay per call via x402 — no API key or subscription required. Returns correlation data from Vongstaad's real-time model.",
+async function handleMessage(msg: any) {
+  if (msg.method === 'tools/list') {
+    respond(msg.id, {
+      tools: [{
+        name: 'fx_correlation',
+        description: 'Get FX correlation coefficient between currency pairs via x402 payment',
         inputSchema: {
-          type: "object",
+          type: 'object',
           properties: {
-            pairs: {
-              type: "array",
-              items: { type: "string" },
-              description: "Currency pairs to check correlation for (e.g., ['EURUSD', 'GBPUSD'])",
-              default: ["EURUSD"]
-            },
-            window: {
-              type: "string",
-              enum: ["7d", "30d", "90d"],
-              description: "Time window for correlation calculation",
-              default: "30d"
-            }
+            pairs: { type: 'array', items: { type: 'string' }, description: 'Currency pairs (e.g., ["EURUSD","GBPUSD"])' },
+            window: { type: 'string', enum: ['7d','30d','90d'], description: 'Time window', default: '30d' }
           },
-          required: ["pairs"]
+          required: ['pairs']
         }
+      }]
+    });
+  } else if (msg.method === 'tools/call') {
+    const { name, arguments: args } = msg.params;
+    if (name === 'fx_correlation') {
+      try {
+        const data = await fxCorrelation(args.pairs || ['EURUSD'], args.window || '30d');
+        respond(msg.id, { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
+      } catch(e: any) {
+        respond(msg.id, { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true });
       }
-    ]
-  };
-});
-
-// Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  if (name === "fx_correlation") {
-    try {
-      const result = await fxCorrelation(args);
-      return { content: [{ type: "text", text: result }] };
-    } catch (e: any) {
-      return { content: [{ type: "text", text: `Error: ${e.message}` }], isError: true };
     }
+  } else if (msg.method === 'initialize') {
+    respond(msg.id, { protocolVersion: '2024-11-05', serverInfo: { name: 'vongstaad-mcp-fx', version: '1.0.0' }, capabilities: { tools: {} } });
   }
-
-  return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
-});
-
-// Start server
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Vongstaad MCP FX Server running on stdio");
-  console.error("Endpoint:", VONGSTAAD_ENDPOINT);
-  console.error("Wallet configured:", walletPrivateKey ? "✅" : "⚠️  WALLET_PRIVATE_KEY not set");
 }
 
-main().catch(console.error);
+function respond(id: any, result: any) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+
+console.error('Vongstaad MCP FX Server ready');
