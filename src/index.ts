@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Vongstaad MCP FX Server — zero dependencies
-// Raw MCP JSON-RPC over stdin/stdout
+// Vongstaad MCP FX Server
+// Raw MCP JSON-RPC over stdin/stdout — processes each line as a message
 
 const ENDPOINT = "https://vongstaad-data.vongstaad.com/v1/correlation";
 
@@ -29,52 +29,32 @@ async function fxCorrelation(pairs: string[], window: string): Promise<any> {
   return submitProof(proof);
 }
 
-// Read JSON-RPC from stdin, write to stdout
-process.stdin.setEncoding('utf-8');
-let buffer = '';
+// Process messages — one JSON-RPC per line
+const rl = require('readline').createInterface({ input: process.stdin });
 
-process.stdin.on('data', async (chunk: string) => {
-  buffer += chunk;
+rl.on('line', async (line: string) => {
   try {
-    const msg = JSON.parse(buffer);
-    buffer = '';
-    await handleMessage(msg);
-  } catch(e) { /* incomplete JSON, wait for more */ }
-});
+    const msg = JSON.parse(line);
+    let result: any = {};
 
-async function handleMessage(msg: any) {
-  if (msg.method === 'tools/list') {
-    respond(msg.id, {
-      tools: [{
-        name: 'fx_correlation',
-        description: 'Get FX correlation coefficient between currency pairs via x402 payment',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            pairs: { type: 'array', items: { type: 'string' }, description: 'Currency pairs (e.g., ["EURUSD","GBPUSD"])' },
-            window: { type: 'string', enum: ['7d','30d','90d'], description: 'Time window', default: '30d' }
-          },
-          required: ['pairs']
+    if (msg.method === 'initialize') {
+      result = { protocolVersion: '2024-11-05', serverInfo: { name: 'vongstaad-mcp-fx', version: '1.0.0' }, capabilities: { tools: {} } };
+    } else if (msg.method === 'tools/list') {
+      result = { tools: [{ name: 'fx_correlation', description: 'Get FX correlation coefficient between currency pairs via x402 payment', inputSchema: { type: 'object', properties: { pairs: { type: 'array', items: { type: 'string' }, description: 'Currency pairs (e.g., ["EURUSD","GBPUSD"])' }, window: { type: 'string', enum: ['7d','30d','90d'], description: 'Time window', default: '30d' } }, required: ['pairs'] } }] };
+    } else if (msg.method === 'tools/call') {
+      const { name, arguments: args } = msg.params;
+      if (name === 'fx_correlation') {
+        try {
+          const data = await fxCorrelation(args.pairs || ['EURUSD'], args.window || '30d');
+          result = { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
+        } catch(e: any) {
+          result = { content: [{ type: 'text', text: 'Error: ' + e.message }], isError: true };
         }
-      }]
-    });
-  } else if (msg.method === 'tools/call') {
-    const { name, arguments: args } = msg.params;
-    if (name === 'fx_correlation') {
-      try {
-        const data = await fxCorrelation(args.pairs || ['EURUSD'], args.window || '30d');
-        respond(msg.id, { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
-      } catch(e: any) {
-        respond(msg.id, { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true });
       }
     }
-  } else if (msg.method === 'initialize') {
-    respond(msg.id, { protocolVersion: '2024-11-05', serverInfo: { name: 'vongstaad-mcp-fx', version: '1.0.0' }, capabilities: { tools: {} } });
-  }
-}
 
-function respond(id: any, result: any) {
-  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
-}
+    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+  } catch(e) {}
+});
 
 console.error('Vongstaad MCP FX Server ready');
