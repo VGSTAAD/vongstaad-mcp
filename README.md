@@ -2,16 +2,15 @@
 
 Give your AI agent real-time FX correlation data via x402. No subscription. No API key.
 
-## Setup
+## Setup (2 minutes)
 
-```bash
-npm install -g @vongstaad/mcp-fx
-Add to Claude Desktop config. Fund wallet with $5 USDC on Base. Done.
+Clone and add to Claude Desktop config. Fund wallet with $5 USDC on Base. Done.
 
-Tool: fx_correlation
-Check correlation between FX pairs. $0.01 USDC per call.
+## Tools
 
-Links
-API: https://vongstaad-data.vongstaad.com
+**fx_correlation** — Get correlation coefficient between FX pairs. $0.01/call.
 
-x402: https://x402.org
+## Links
+- API: https://vongstaad-data.vongstaad.com
+- Discovery: https://vongstaad-data.vongstaad.com/.well-known/x402.json
+- x402: https://x402.org
