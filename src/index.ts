@@ -1,102 +1,87 @@
 #!/usr/bin/env node
-import * as readline from 'readline';
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
-const SIGNAL_API = "https://vongstaad-signal-api.vongstaad-orchestrator-coders.workers.dev";
-const DISCOVERY = "https://vongstaad-data.vongstaad.com/.well-known/x402.json";
+// Environment switching via VONGSTAAD_ENV
+const VONGSTAAD_ENV = process.env.VONGSTAAD_ENV || 'prod';
 
-async function callSignalAPI(endpoint: string, pair: string, window: string): Promise<any> {
-  const url = `${SIGNAL_API}${endpoint}?pair=${pair}&window=${window}`;
-  
-  // Round 1: Get challenge
-  const challengeResp = await fetch(url);
-  if (challengeResp.status !== 402) {
-    return challengeResp.json();
-  }
-  const challenge = await challengeResp.json();
-  
-  // Round 2: Submit proof (using placeholder — real wallet integration needed)
-  const proof = {
-    transactionHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
-    signature: challenge.signature,
-    expiresAt: challenge.expiresAt,
-    recipient: challenge.recipient,
-    amount: challenge.amount,
-    challengeId: challenge.challengeId
-  };
-  
-  const resp = await fetch(url, { headers: { "X-Payment-Proof": JSON.stringify(proof) } });
-  return resp.json();
-}
+const SIGNAL_API_URL = VONGSTAAD_ENV === 'dev' || VONGSTAAD_ENV === 'testnet'
+  ? 'https://vongstaad-signal-api.restless-pond-8b7b.workers.dev'
+  : 'https://vongstaad-signal-api.restless-pond-8b7b.workers.dev'; // Same for now, will switch to custom domain
 
-const rl = readline.createInterface({ input: process.stdin });
+const AGENTIC_API_URL = VONGSTAAD_ENV === 'dev' || VONGSTAAD_ENV === 'testnet'
+  ? 'https://vongstaad-data.restless-pond-8b7b.workers.dev'
+  : 'https://vongstaad-data.vongstaad.com';
 
-rl.on('line', async (line: string) => {
-  try {
-    const msg = JSON.parse(line);
-    let result: any = {};
-
-    if (msg.method === 'initialize') {
-      result = { protocolVersion: '2024-11-05', serverInfo: { name: 'vongstaad-mcp-fx', version: '1.0.0' }, capabilities: { tools: {} } };
-    } else if (msg.method === 'tools/list') {
-      result = {
-        tools: [
-          {
-            name: 'fx_live_price',
-            description: 'Get real-time FX price from current hour — for live trading decisions. Premium pricing.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                pair: { type: 'string', description: 'Currency pair (e.g., BTCUSD, ETHUSD)', default: 'BTCUSD' }
-              },
-              required: ['pair']
-            }
-          },
-          {
-            name: 'fx_historical_correlation',
-            description: 'Get precomputed correlation over historical window — for research and strategy validation. Volume pricing.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                pair: { type: 'string', description: 'Base pair for correlation (e.g., BTCUSD_ETHUSD)', default: 'BTCUSD_ETHUSD' },
-                window: { type: 'string', enum: ['7d', '30d', '90d'], description: 'Time window', default: '30d' }
-              },
-              required: ['pair']
-            }
-          },
-          {
-            name: 'fx_historical_price',
-            description: 'Get historical price signal over window — for backtesting and research. Volume pricing.',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                pair: { type: 'string', description: 'Currency pair', default: 'BTCUSD' },
-                window: { type: 'string', enum: ['7d', '30d', '90d'], description: 'Time window', default: '30d' }
-              },
-              required: ['pair']
-            }
-          }
-        ]
-      };
-    } else if (msg.method === 'tools/call') {
-      const { name, arguments: args } = msg.params;
-      try {
-        let data;
-        if (name === 'fx_live_price') {
-          data = await callSignalAPI('/v1/live/price', args.pair || 'BTCUSD', '');
-        } else if (name === 'fx_historical_correlation') {
-          data = await callSignalAPI('/v1/historical/correlation', args.pair || 'BTCUSD_ETHUSD', args.window || '30d');
-        } else if (name === 'fx_historical_price') {
-          data = await callSignalAPI('/v1/historical/price', args.pair || 'BTCUSD', args.window || '30d');
-        }
-        result = { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
-      } catch(e: any) {
-        result = { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-      }
+const TOOLS = [
+  {
+    name: "fx_live_price",
+    description: "Get the latest live FX/crypto price from Vongstaad's qualified data feed. Returns the most recent consensus price for the requested pair.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pair: { type: "string", description: "Trading pair, e.g. BTCUSD, ETHUSD, EURUSD" }
+      },
+      required: ["pair"]
     }
+  },
+  {
+    name: "fx_historical_signal",
+    description: "Get a historical quant signal for a trading pair. Available models: sma, price, correlation, regime, momentum, volatility, mean-reversion. Windows: 7d, 30d, 90d.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pair: { type: "string", description: "Trading pair, e.g. BTCUSD" },
+        model: { type: "string", description: "Model name: sma, price, correlation, regime, momentum, volatility, mean-reversion" },
+        window: { type: "string", description: "Time window: 7d, 30d, 90d" }
+      },
+      required: ["pair", "model", "window"]
+    }
+  }
+];
 
-    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
-  } catch(e) {}
+const server = new Server(
+  { name: "vongstaad-mcp", version: "1.0.0" },
+  { capabilities: { tools: {} } }
+);
+
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  return { tools: TOOLS };
 });
 
-console.error('Vongstaad MCP FX Server ready');
-console.error('Signal API:', SIGNAL_API);
+server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const { name, arguments: args } = request.params;
+  
+  try {
+    switch (name) {
+      case "fx_live_price": {
+        const pair = (args as any).pair || 'BTCUSD';
+        const response = await fetch(`${SIGNAL_API_URL}/v1/live/price?pair=${pair}`);
+        const data = await response.json() as any;
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }]
+        };
+      }
+      
+      case "fx_historical_signal": {
+        const pair = (args as any).pair || 'BTCUSD';
+        const model = (args as any).model || 'sma';
+        const window = (args as any).window || '30d';
+        const response = await fetch(`${SIGNAL_API_URL}/v1/historical/${model}?pair=${pair}&window=${window}`);
+        const data = await response.json() as any;
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }]
+        };
+      }
+      
+      default:
+        return { content: [{ type: "text", text: `Unknown tool: ${name}` }] };
+    }
+  } catch (error: any) {
+    return { content: [{ type: "text", text: `Error: ${error.message}` }] };
+  }
+});
+
+const transport = new StdioServerTransport();
+await server.connect(transport);
