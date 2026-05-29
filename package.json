@@ -1,7 +1,7 @@
 {
   "name": "@vongstaad/mcp-fx",
-  "version": "1.0.0",
-  "description": "MCP server for Vongstaad FX correlation — agent-native, x402 paid, zero registration",
+  "version": "1.0.1",
+  "description": "MCP server for Vongstaad FX correlation \u2014 agent-native, x402 paid, zero registration",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
@@ -12,11 +12,18 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts"
   },
-  "keywords": ["mcp", "x402", "fx", "forex", "correlation", "agent", "ai"],
+  "keywords": [
+    "mcp",
+    "x402",
+    "fx",
+    "forex",
+    "correlation",
+    "agent",
+    "ai"
+  ],
   "license": "MIT",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@x402/client": "^0.1.0"
+    "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
